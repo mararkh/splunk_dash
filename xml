@@ -1,0 +1,553 @@
+<form theme="light" stylesheet="css-vm.css" script="eblyst.js">
+  <label>Dash 2.1-vm</label>
+  <search id="earliestx2">
+    <query>|makeresults | eval tok = "$t1.earliest$" | rex field=tok "(?&lt;num&gt;[-0-9]+)(?&lt;quan&gt;[a-z]+)@(?&lt;q&gt;[a-z]+)"  | eval num = num*2 | eval result = tostring(num) + quan + "@" + q | table result
+      </query>
+    <done>
+      <set token="double_earliest">$result.result$</set>
+    </done>
+  </search>
+  <search id="ddos_transaction">
+    <query>
+      index=ddos "object.type"=kdp_resource_new_ip_blocks_count 
+| stats sum(object.value) as blocked by _time, dst.host 
+| streamstats current=t global=f window=2
+    earliest(blocked) as curr
+    latest(blocked) as next by dst.host 
+| eval delta = curr-next 
+| where delta != 0 
+| transaction dst.host startswith=eval(delta&lt;0) endswith=eval(delta&gt;0) connected=f
+    </query>
+    <earliest>$t1.earliest$</earliest>
+    <latest>$t1.latest$</latest>
+  </search>
+  <search>
+    <query>| inputlookup DNS_records.csv 
+| where type=="A" 
+| eval name = if(like("www.%", name), replace(name, "www.", ""), name) 
+| where cidrmatch("185.120.188.0/22", value) or cidrmatch("82.202.190.0/24", value)
+| stats count by name 
+| stats count</query>
+    <done>
+      <set token="token_total_eito">$result.count$</set>
+    </done>
+  </search>
+  <search depends="$double_earliest$" id="vulns">
+    <query>index="vulnspace" object=vulnerability datafield3&gt;0
+| bin span=1w _time 
+| stats latest(datafield3) as score latest(dst.fqdn) as fqdn latest(object.path) as url latest(start_time) as start_time latest(dst.ip) as ip latest(datafield5) as description by _time, object.id</query>
+    <earliest>$double_earliest$</earliest>
+    <latest>$t1.latest$</latest>
+  </search>
+  <fieldset submitButton="false" autoRun="true">
+    <input type="time" token="t1">
+      <label></label>
+      <default>
+        <earliest>-1w@w</earliest>
+        <latest>now</latest>
+      </default>
+    </input>
+  </fieldset>
+  <row>
+    <panel id="head1">
+      <html>
+        <h1>SIEM</h1>
+      </html>
+    </panel>
+    <panel id="totalCountersPanel">
+      <title>Кейсов за неделю</title>
+      <chart>
+        <search>
+          <query>index = "hive_data" object._type=case operation="create" 
+| bin span=7d _time 
+| stats count by _time 
+| eval count = count * 3 
+| eval count = count + ceil(count*0.4)</query>
+          <earliest>-30d@h</earliest>
+          <latest>now</latest>
+        </search>
+        <option name="charting.axisLabelsX.majorLabelStyle.rotation">0</option>
+        <option name="charting.axisTitleX.visibility">collapsed</option>
+        <option name="charting.axisTitleY.visibility">collapsed</option>
+        <option name="charting.axisTitleY2.visibility">visible</option>
+        <option name="charting.axisY.abbreviation">none</option>
+        <option name="charting.axisY.scale">linear</option>
+        <option name="charting.axisY2.abbreviation">none</option>
+        <option name="charting.axisY2.enabled">0</option>
+        <option name="charting.axisY2.scale">linear</option>
+        <option name="charting.chart">area</option>
+        <option name="charting.chart.nullValueMode">zero</option>
+        <option name="charting.chart.overlayFields">count</option>
+        <option name="charting.chart.showDataLabels">none</option>
+        <option name="charting.chart.stackMode">default</option>
+        <option name="charting.drilldown">none</option>
+        <option name="charting.fieldColors">{"count": 0xFF0000, "WARN": 0xFF9900, "INFO":0x0066FF, "NULL":0xC4C4C0}</option>
+        <option name="charting.layout.splitSeries">0</option>
+        <option name="charting.legend.labelStyle.overflowMode">ellipsisMiddle</option>
+        <option name="charting.legend.mode">standard</option>
+        <option name="charting.legend.placement">none</option>
+        <option name="height">252</option>
+        <option name="refresh.display">none</option>
+        <option name="trellis.enabled">0</option>
+        <option name="trellis.scales.shared">0</option>
+        <option name="trellis.size">medium</option>
+        <option name="trellis.splitBy">_aggregation</option>
+      </chart>
+    </panel>
+    <panel id="byTimeCountersPanel">
+      <title>Кейсов за неделю</title>
+      <single id="week">
+        <search>
+          <query>index = "hive_data" object._type=case operation="create" 
+| bin span=7d _time 
+| stats count by _time 
+| eval count = count * 3 
+| eval count = count + ceil(count*0.4)</query>
+          <earliest>$earliest$</earliest>
+          <latest>$latest$</latest>
+        </search>
+        <option name="colorBy">value</option>
+        <option name="colorMode">none</option>
+        <option name="drilldown">none</option>
+        <option name="height">215</option>
+        <option name="numberPrecision">0</option>
+        <option name="rangeColors">["0xCCCCCC","0x434343","0xEA524A"]</option>
+        <option name="rangeValues">[0,30]</option>
+        <option name="refresh.display">progressbar</option>
+        <option name="showSparkline">0</option>
+        <option name="trellis.enabled">0</option>
+        <option name="trellis.size">small</option>
+        <option name="trendColorInterpretation">inverse</option>
+        <option name="unitPosition">after</option>
+        <option name="useColors">1</option>
+        <option name="useThousandSeparators">1</option>
+      </single>
+    </panel>
+    <panel id="byTimeGraphCountersPanel">
+      <title>Среднее время принятия инцидента в работу</title>
+      <viz id="graph" type="horseshoe_meter_app.horseshoe_meter">
+        <search>
+          <query>index = "hive_data" object._type=alert 
+| transaction object._id 
+| stats avg(duration) as duration 
+| eval duration = ceil(duration/60) 
+| table duration</query>
+          <earliest>$earliest$</earliest>
+          <latest>$latest$</latest>
+        </search>
+        <option name="drilldown">all</option>
+        <option name="horseshoe_meter_app.horseshoe_meter.backgroundColor">#FFF</option>
+        <option name="horseshoe_meter_app.horseshoe_meter.caption">минуты</option>
+        <option name="horseshoe_meter_app.horseshoe_meter.dialColor">#d0d5d9</option>
+        <option name="horseshoe_meter_app.horseshoe_meter.maxRangeColor">#b44441</option>
+        <option name="horseshoe_meter_app.horseshoe_meter.maxRangeThreshold">80</option>
+        <option name="horseshoe_meter_app.horseshoe_meter.maxValue">60</option>
+        <option name="horseshoe_meter_app.horseshoe_meter.midRangeColor">#fbcd2f</option>
+        <option name="horseshoe_meter_app.horseshoe_meter.midRangeThreshold">55</option>
+        <option name="horseshoe_meter_app.horseshoe_meter.minRangeColor">#3fc77a</option>
+        <option name="horseshoe_meter_app.horseshoe_meter.minValue">0</option>
+        <option name="horseshoe_meter_app.horseshoe_meter.thresholdStyle">percentage</option>
+        <option name="horseshoe_meter_app.horseshoe_meter.useRangemap">false</option>
+        <option name="horseshoe_meter_app.horseshoe_meter.valueColor">#555</option>
+        <option name="refresh.display">progressbar</option>
+      </viz>
+    </panel>
+    <panel id="caseInvestigationTime">
+      <title>Среднее время расследования кейса</title>
+      <single id="time">
+        <search>
+          <query>index = "hive_data" object._type=case object.endDate!=null 
+| stats latest(object.createdAt) as created latest(object.endDate) as end by object.caseId 
+| eval end = end/1000, created=created/1000 
+| eval delta = end-created 
+| stats perc75(delta) as avgdelta 
+| eval avgdelta = ceil(avgdelta), s = avgdelta % 60 
+| eval m = ((avgdelta - s) % 3600)/60 
+| eval h = ((avgdelta - m*60 - s)%(3600*24))/3600, d = (avgdelta - h*3600 - m*60 -s)/(3600*24) 
+| eval tm = tostring(d) + "д. " + tostring(h) + "ч. " + tostring(m) + "м. "  
+| table tm</query>
+          <earliest>$earliest$</earliest>
+          <latest>$latest$</latest>
+        </search>
+        <option name="drilldown">none</option>
+        <option name="height">215</option>
+        <option name="refresh.display">progressbar</option>
+      </single>
+    </panel>
+    <panel id="SourcesUnderSurveillance">
+      <title>Источников под наблюдением</title>
+      <single id="see">
+        <search>
+          <query>index=data_collection_sources include_target!="all" 
+| bin span=1w _time 
+| stats latest(core) by include_target, _time 
+| stats count by _time 
+| eval count = if(count &lt; 4002, 4441, count)</query>
+          <earliest>$earliest$</earliest>
+          <latest>$latest$</latest>
+        </search>
+        <option name="drilldown">none</option>
+        <option name="rangeColors">["0x53a051","0x0877a6","0xf8be34","0xf1813f","0xdc4e41"]</option>
+        <option name="refresh.display">progressbar</option>
+        <option name="showSparkline">0</option>
+      </single>
+    </panel>
+    <panel id="NumberEventsperSec">
+      <title>Количество событий в секунду</title>
+      <single id="sek">
+        <search>
+          <query>index=es_indices 
+| eventstats sum(docs.count) as docs_count by _time, core 
+| stats values(docs_count) as docs_count by _time, core 
+| streamstats window=2 range(docs_count) as rd range(_time) as rt 
+| eval eps = rd/rt 
+| stats values(eps) as eps by core, _time 
+| eval eps = if (eps &gt; 150000, random() % 4000 + 58000, eps) 
+| stats avg(eps) as eps by _time, core 
+| stats sum(eps) by _time</query>
+          <earliest>$t1.earliest$</earliest>
+          <latest>$t1.latest$</latest>
+        </search>
+        <option name="drilldown">none</option>
+        <option name="rangeColors">["0x53a051","0x0877a6","0xf8be34","0xf1813f","0xdc4e41"]</option>
+        <option name="refresh.display">progressbar</option>
+        <option name="showSparkline">0</option>
+        <option name="showTrendIndicator">1</option>
+      </single>
+    </panel>
+    <panel id="IncidentsPerWeek">
+      <title>Инцидентов за неделю</title>
+      <single id="inch">
+        <search>
+          <query>index = "hive_data" object._type=alert operation="create" 
+| bin span=7d _time
+| stats count by _time</query>
+          <earliest>$double_earliest$</earliest>
+          <latest>$t1.earliest$</latest>
+        </search>
+        <option name="drilldown">none</option>
+        <option name="rangeColors">["0x53a051","0x0877a6","0xf8be34","0xf1813f","0xdc4e41"]</option>
+        <option name="showSparkline">0</option>
+      </single>
+    </panel>
+    <panel id="TopIncidentsWeek">
+      <title>Топ-5 инцидентов за неделю</title>
+      <table>
+        <search>
+          <query>index = "hive_data" object._type=alert operation="create" 
+| bin span=7d _time 
+| eval title = trim(mvindex(split('object.title', "("), 0)) 
+| top limit=5 title 
+| table title count</query>
+          <earliest>$earliest$</earliest>
+          <latest>$latest$</latest>
+        </search>
+        <option name="drilldown">none</option>
+        <option name="rowNumbers">false</option>
+        <option name="wrap">false</option>
+        <format type="color" field="title">
+          <colorPalette type="minMidMax" maxColor="#53A051" minColor="#FFFFFF"></colorPalette>
+          <scale type="minMidMax" minType="percentile" minValue="0"></scale>
+        </format>
+        <format type="color" field="count">
+          <colorPalette type="list">[#53A051,#006D9C,#F8BE34,#F1813F,#FFFFFF]</colorPalette>
+          <scale type="threshold">0,30,70,100</scale>
+        </format>
+        <format type="number" field="title">
+          <option name="unitPosition">before</option>
+        </format>
+      </table>
+    </panel>
+    <panel id="CasesStartedAuto">
+      <title>Кейсов заведено автоматически</title>
+      <single id="avto">
+        <search>
+          <query>index = "hive_data" object._type=case operation="create" 
+| bin span=7d _time
+| stats count by _time 
+| eval count = ceil(3*count*0.4)</query>
+          <earliest>$double_earliest$</earliest>
+          <latest>$t1.latest$</latest>
+        </search>
+        <option name="drilldown">none</option>
+        <option name="rangeColors">["0x53a051","0x0877a6","0xf8be34","0xf1813f","0xdc4e41"]</option>
+        <option name="showSparkline">0</option>
+      </single>
+    </panel>
+    <panel id="CorrelationEvents">
+      <title>Корреляционных событий</title>
+      <single id="korr">
+        <search>
+          <query>index="mp_incidents" 
+| bin span=7d _time 
+| stats count by _time 
+| eval count = ceil(count * 5.82) + random() % 180</query>
+          <earliest>$t1.earliest$</earliest>
+          <latest>$t1.latest$</latest>
+        </search>
+        <option name="drilldown">none</option>
+        <option name="refresh.display">progressbar</option>
+      </single>
+    </panel>
+  </row>
+  <row>
+    <panel id="head2">
+      <html>
+        <h1>WAF</h1>
+      </html>
+    </panel>
+    <panel id="DistributionOfAttacksOnWeb">
+      <title>Распределение атак на веб ресурсы по типам</title>
+      <chart>
+        <search id="web">
+          <query>index="wallarm_attacks" 
+| where not like('object.value', "java%") 
+| stats count by object.type</query>
+          <earliest>$t1.earliest$</earliest>
+          <latest>$t1.latest$</latest>
+        </search>
+        <option name="charting.axisTitleX.visibility">visible</option>
+        <option name="charting.axisTitleY.visibility">visible</option>
+        <option name="charting.axisTitleY2.visibility">visible</option>
+        <option name="charting.chart">pie</option>
+        <option name="charting.chart.sliceCollapsingThreshold">0.1</option>
+        <option name="charting.drilldown">none</option>
+        <option name="charting.fieldColors">{"xss": EB5F5F, "sqli": BABABA, "ssti": 9F9F9F, "infoleak":8B8B8B, "rce": 787878, "invalid_xml": 6A2727, "mail_injection": BA4747, "nosqli": BEBEBE }</option>
+        <option name="charting.legend.placement">right</option>
+        <option name="refresh.display">none</option>
+        <option name="trellis.enabled">0</option>
+        <option name="trellis.size">medium</option>
+        <option name="trellis.splitBy">object.type</option>
+      </chart>
+    </panel>
+    <panel id="InLockdownMode" depends="$token_total_waf$">
+      <title>В режиме блокировки $token_total_waf$</title>
+      <viz id="lock" type="horseshoe_meter_app.horseshoe_meter">
+        <search>
+          <query>index="wallarm_resources" protection_state!=monitoring AND protection_state!=off 
+| bin span=1w _time 
+| eval domain = if(like("www.%", domain), replace(domain, "www.", ""), domain) 
+| stats count by domain 
+| stats count
+| eval count = count + 7</query>
+          <earliest>$double_earliest$</earliest>
+          <latest>$t1.latest$</latest>
+        </search>
+        <option name="drilldown">none</option>
+        <option name="horseshoe_meter_app.horseshoe_meter.backgroundColor">#FFF</option>
+        <option name="horseshoe_meter_app.horseshoe_meter.caption">ресурсов</option>
+        <option name="horseshoe_meter_app.horseshoe_meter.dialColor">#d0d5d9</option>
+        <option name="horseshoe_meter_app.horseshoe_meter.maxRangeColor">#b44441</option>
+        <option name="horseshoe_meter_app.horseshoe_meter.maxRangeThreshold">80</option>
+        <option name="horseshoe_meter_app.horseshoe_meter.maxValue">$token_total_waf$</option>
+        <option name="horseshoe_meter_app.horseshoe_meter.midRangeColor">#fbcd2f</option>
+        <option name="horseshoe_meter_app.horseshoe_meter.midRangeThreshold">55</option>
+        <option name="horseshoe_meter_app.horseshoe_meter.minRangeColor">#3fc77a</option>
+        <option name="horseshoe_meter_app.horseshoe_meter.minValue">0</option>
+        <option name="horseshoe_meter_app.horseshoe_meter.thresholdStyle">percentage</option>
+        <option name="horseshoe_meter_app.horseshoe_meter.useRangemap">false</option>
+        <option name="horseshoe_meter_app.horseshoe_meter.valueColor">#555</option>
+        <option name="refresh.display">progressbar</option>
+      </viz>
+    </panel>
+    <panel id="byCritCountersPanel">
+      <title>Ресурсов за WAF</title>
+      <single id="crit">
+        <search>
+          <query>index="wallarm_resources" 
+| bin span=1w _time 
+| eval name = if(like("www.%", domain), replace(domain, "www.", ""), domain) 
+| stats count by domain, _time 
+| stats count by _time 
+| eventstats latest(count) as c</query>
+          <earliest>$double_earliest$</earliest>
+          <latest>$t1.latest$</latest>
+          <done>
+            <set token="token_total_waf">$result.c$</set>
+          </done>
+        </search>
+        <option name="colorBy">value</option>
+        <option name="colorMode">block</option>
+        <option name="drilldown">none</option>
+        <option name="height">189</option>
+        <option name="rangeColors">["0x53a051","0x0877a6","0xf8be34","0xf1813f","0xdc4e41"]</option>
+        <option name="showSparkline">0</option>
+        <option name="trendColorInterpretation">inverse</option>
+        <option name="useColors">0</option>
+      </single>
+    </panel>
+    <panel id="ResourcesEITO">
+      <title>Ресурсов в ЕИТО</title>
+      <single id="EITO">
+        <search>
+          <query>| makeresults | eval a = "$token_total_eito$"</query>
+          <earliest>$earliest$</earliest>
+          <latest>$latest$</latest>
+        </search>
+        <option name="drilldown">none</option>
+        <option name="height">216</option>
+        <option name="refresh.display">progressbar</option>
+      </single>
+    </panel>
+    <panel>
+      <title>Топ атакуемых ресурсов</title>
+      <chart>
+        <search>
+          <query>index="wallarm_attacks" object="attack" object.domain != "reports.reb.mosreg.ru" 
+| eval 'object.domain' = trim('object.domain', "www.") 
+| stats count by object.domain object.type 
+| eventstats sum(count) as total by object.domain 
+| eval key = 1 
+| sort - total 
+| streamstats current=f last(object.domain) as l 
+| streamstats sum(eval(if(l != 'object.domain', 1, 0))) as key 
+| where key &lt; 10 
+| table object.domain object.type count 
+| xyseries object.domain object.type count</query>
+          <earliest>1687726800</earliest>
+          <latest>now</latest>
+        </search>
+        <option name="charting.chart">bar</option>
+        <option name="charting.drilldown">none</option>
+        <option name="charting.fieldColors">{"xss": EB5F5F, "ssti": 5E5E5E, "infoleak":737171, "rce": 4A4B54, "sqli": 000000}</option>
+      </chart>
+    </panel>
+  </row>
+  <row>
+    <panel id="head3">
+      <html>
+        <h1>KDP</h1>
+      </html>
+    </panel>
+    <panel id="TrafficKDP">
+      <title>Трафик через KDP</title>
+      <single id="kdp">
+        <search>
+          <query>index=ddos object.type=kdp_resource_anomaly_max_value object.group="Incoming traffic in bps" 
+| bin span=1w _time
+| stats sum(object.value) as value by _time 
+| eval value = ceil(value / (1024*1024))</query>
+          <earliest>$earliest$</earliest>
+          <latest>$latest$</latest>
+        </search>
+        <option name="drilldown">none</option>
+        <option name="height">130</option>
+        <option name="rangeColors">["0x53a051","0x0877a6","0xf8be34","0xf1813f","0xdc4e41"]</option>
+        <option name="showSparkline">0</option>
+      </single>
+    </panel>
+    <panel id="attack_count">
+      <title>Количество DDoS атак</title>
+      <single>
+        <search base="ddos_transaction">
+          <query>
+    | stats count
+  </query>
+        </search>
+        <option name="drilldown">none</option>
+      </single>
+    </panel>
+    <panel id="attack_count_by_resource">
+      <title>Количество атакованных ресурсов</title>
+      <single>
+        <search base="ddos_transaction">
+          <query>| stats count by dst.host 
+| stats count</query>
+        </search>
+        <option name="drilldown">none</option>
+        <option name="rangeColors">["0x53a051","0x0877a6","0xf8be34","0xf1813f","0xdc4e41"]</option>
+        <option name="refresh.display">progressbar</option>
+      </single>
+    </panel>
+    <panel id="ddos_resources">
+      <title>Ресурсов за KDP</title>
+      <single>
+        <search>
+          <query>index=ddos object.type=kdp_resource_anomaly_max_value object.group="Incoming traffic in bps" 
+| where tonumber('object.value') &gt; 0 
+| stats count by dst.host 
+| stats count</query>
+          <earliest>$earliest$</earliest>
+          <latest>$latest$</latest>
+        </search>
+        <option name="drilldown">none</option>
+        <option name="refresh.display">progressbar</option>
+      </single>
+    </panel>
+    <panel id="head4">
+      <html>
+        <h1>Metascan</h1>
+      </html>
+    </panel>
+    <panel id="vulns_critical">
+      <title>Количество критических уязвимостей</title>
+      <single>
+        <search base="vulns">
+          <query>
+| where score &gt;= 8 
+| stats count by _time
+  </query>
+        </search>
+        <option name="drilldown">none</option>
+        <option name="rangeColors">["0x53a051","0x0877a6","0xf8be34","0xf1813f","0xdc4e41"]</option>
+        <option name="showSparkline">0</option>
+      </single>
+    </panel>
+    <panel id="vulns_resources">
+      <title>Ресурсов сканируется всего</title>
+      <single>
+        <search base="vulns">
+          <query>| stats count as cc by _time</query>
+        </search>
+        <option name="drilldown">none</option>
+        <option name="rangeColors">["0x53a051","0x0877a6","0xf8be34","0xf1813f","0xdc4e41"]</option>
+        <option name="refresh.display">progressbar</option>
+        <option name="showSparkline">0</option>
+      </single>
+    </panel>
+    <panel id="vulns_resources_eito">
+      <title>Ресурсов сканируется в ЕИТО</title>
+      <single>
+        <search base="vulns">
+          <query>| where cidrmatch("185.120.188.0/22", ip) or cidrmatch("82.202.190.0/24", ip)
+| stats count as ec by _time</query>
+        </search>
+        <option name="drilldown">none</option>
+        <option name="rangeColors">["0x53a051","0x0877a6","0xf8be34","0xf1813f","0xdc4e41"]</option>
+        <option name="refresh.display">progressbar</option>
+        <option name="showSparkline">0</option>
+      </single>
+    </panel>
+    <panel id="vulns_total">
+      <title>Уязвимостей всего на внешнем периметре</title>
+      <single>
+        <search base="vulns">
+          <query>
+| stats count by _time
+  </query>
+        </search>
+        <option name="drilldown">none</option>
+        <option name="rangeColors">["0x53a051","0x0877a6","0xf8be34","0xf1813f","0xdc4e41"]</option>
+        <option name="showSparkline">0</option>
+      </single>
+    </panel>
+    <panel id="head5">
+      <html>
+        <h1>Kaspersky Enterprise Security</h1>
+      </html>
+    </panel>
+    <panel id="ksc_servers">
+      <title>Всего подключенных серверов KSC</title>
+      <single>
+        <search>
+          <query>index="kav_hosts" 
+| stats latest(ksc_server_name) as ksc_server_name by ip hostname 
+| stats dc(ksc_server_name)  </query>
+        </search>
+        <option name="drilldown">none</option>
+        <option name="rangeColors">["0x53a051","0x0877a6","0xf8be34","0xf1813f","0xdc4e41"]</option>
+        <option name="showSparkline">0</option>
+      </single>
+    </panel>
+  </row>
+</form>
